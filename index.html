@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Video Watermark Remover (No Crop)</title>
+    <style>
+        * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: #0f172a; color: #f8fafc; display: flex; flex-direction: column; align-items: center; padding: 20px; margin: 0; }
+        .container { max-width: 850px; width: 100%; background: #1e293b; padding: 25px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); text-align: center; }
+        h1 { margin-top: 0; color: #38bdf8; }
+        p { color: #94a3b8; font-size: 14px; }
+        .upload-btn { background: #3b82f6; color: white; padding: 12px 24px; border-radius: 8px; cursor: pointer; display: inline-block; font-weight: bold; margin-bottom: 15px; transition: 0.2s; }
+        .upload-btn:hover { background: #2563eb; }
+        input[type="file"] { display: none; }
+        
+        .workspace { position: relative; display: none; margin: 15px auto; border: 2px dashed #475569; overflow: hidden; max-width: 100%; }
+        video { display: block; max-width: 100%; max-height: 65vh; height: auto; }
+        canvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
+
+        .controls { margin-top: 15px; display: none; gap: 10px; justify-content: center; flex-wrap: wrap; }
+        button { color: white; border: none; padding: 12px 20px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 14px; transition: 0.2s; }
+        .btn-play { background: #6366f1; }
+        .btn-fast { background: #10b981; }
+        .btn-ai { background: #a855f7; }
+        button:hover { opacity: 0.9; }
+        button:disabled { background: #64748b !important; cursor: not-allowed; }
+        #status { margin-top: 15px; font-weight: bold; color: #fbbf24; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>✨ AI Video Watermark Remover</h1>
+    <p>Step 1: Video upload karein | Step 2: Watermark par mouse drag karke Box banayein | Step 3: Mode chunein</p>
+
+    <label class="upload-btn">
+        📁 Select Video
+        <input type="file" id="videoInput" accept="video/*">
+    </label>
+
+    <div class="workspace" id="workspace">
+        <video id="video" controlsList="nodownload"></video>
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <div class="controls" id="controls">
+        <button id="playPauseBtn" class="btn-play">⏯️ Play/Pause</button>
+        <button id="fastRemoveBtn" class="btn-fast">⚡ Fast Remove (Free Blend)</button>
+        <button id="aiRemoveBtn" class="btn-ai">🤖 AI Inpaint (Zero Blur)</button>
+    </div>
+
+    <div id="status"></div>
+</div>
+
+<script>
+    const videoInput = document.getElementById('videoInput');
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const workspace = document.getElementById('workspace');
+    const controls = document.getElementById('controls');
+    const fastRemoveBtn = document.getElementById('fastRemoveBtn');
+    const aiRemoveBtn = document.getElementById('aiRemoveBtn');
+    const playPauseBtn = document.getElementById('playPauseBtn');
+    const statusText = document.getElementById('status');
+
+    let isDrawing = false;
+    let startX = 0, startY = 0, rectW = 0, rectH = 0;
+    let uploadedFile = null;
+
+    videoInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        uploadedFile = file;
+        video.src = URL.createObjectURL(file);
+        workspace.style.display = 'inline-block';
+        controls.style.display = 'flex';
+        statusText.innerText = "Ab watermark ke upar mouse drag karke Lal Box banayein.";
+    });
+
+    video.addEventListener('loadedmetadata', () => {
+        canvas.width = video.clientWidth;
+        canvas.height = video.clientHeight;
+    });
+
+    playPauseBtn.addEventListener('click', () => {
+        if (video.paused) video.play();
+        else video.pause();
+    });
+
+    canvas.addEventListener('mousedown', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        startX = e.clientX - rect.left;
+        startY = e.clientY - rect.top;
+        isDrawing = true;
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        if (!isDrawing) return;
+        const rect = canvas.getBoundingClientRect();
+        rectW = (e.clientX - rect.left) - startX;
+        rectH = (e.clientY - rect.top) - startY;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 2;
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.25)';
+        ctx.fillRect(startX, startY, rectW, rectH);
+        ctx.strokeRect(startX, startY, rectW, rectH);
+    });
+
+    canvas.addEventListener('mouseup', () => { isDrawing = false; });
+
+    // Generate Black & White Mask Image for AI Inpainting
+    function generateMaskBase64(x, y, w, h, totalW, totalH) {
+        const maskCanvas = document.createElement('canvas');
+        maskCanvas.width = totalW;
+        maskCanvas.height = totalH;
+        const mCtx = maskCanvas.getContext('2d');
+        
+        // Black background (Keep original video area)
+        mCtx.fillStyle = '#000000';
+        mCtx.fillRect(0, 0, totalW, totalH);
+        
+        // White box (Area for AI to remove and reconstruct)
+        mCtx.fillStyle = '#ffffff';
+        mCtx.fillRect(x, y, w, h);
+        
+        return maskCanvas.toDataURL('image/png');
+    }
+
+    async function processVideo(mode) {
+        if (!uploadedFile || rectW === 0 || rectH === 0) {
+            alert("Kripya pehle watermark ke upar mouse drag karke box banayein!");
+            return;
+        }
+
+        const scaleX = video.videoWidth / canvas.width;
+        const scaleY = video.videoHeight / canvas.height;
+
+        const actualX = Math.round(Math.min(startX, startX + rectW) * scaleX);
+        const actualY = Math.round(Math.min(startY, startY + rectH) * scaleY);
+        const actualW = Math.round(Math.abs(rectW) * scaleX);
+        const actualH = Math.round(Math.abs(rectH) * scaleY);
+
+        const formData = new FormData();
+        formData.append('video', uploadedFile);
+        formData.append('x', actualX);
+        formData.append('y', actualY);
+        formData.append('w', actualW);
+        formData.append('h', actualH);
+        formData.append('vidW', video.videoWidth);
+        formData.append('vidH', video.videoHeight);
+        formData.append('mode', mode);
+
+        if (mode === 'ai') {
+            const maskBase64 = generateMaskBase64(actualX, actualY, actualW, actualH, video.videoWidth, video.videoHeight);
+            formData.append('mask', maskBase64);
+        }
+
+        fastRemoveBtn.disabled = true;
+        aiRemoveBtn.disabled = true;
+        statusText.innerText = mode === 'ai' 
+            ? "🤖 AI Video reconstruct kar raha hai (Isme 1-2 minute lag sakte hain)..." 
+            : "⏳ Fast Processing... Watermark hataya ja raha hai (No Crop)...";
+
+        try {
+            // Relative URL '/remove-watermark' works on both localhost and Render Live Hosting!
+            const apiUrl = window.location.port === '5500' ? 'http://localhost:3000/remove-watermark' : '/remove-watermark';
+const response = await fetch(apiUrl, {
+    method: 'POST',
+    body: formData
+});
+
+            if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(errText || "Processing failed!");
+            }
+
+            const blob = await response.blob();
+            const downloadUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = `clean_video_${Date.now()}.mp4`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+
+            statusText.innerText = "✅ Watermark successfully hat gaya! Video download ho rahi hai.";
+        } catch (err) {
+            statusText.innerText = "❌ Error: " + err.message;
+        } finally {
+            fastRemoveBtn.disabled = false;
+            aiRemoveBtn.disabled = false;
+        }
+    }
+
+    fastRemoveBtn.addEventListener('click', () => processVideo('fast'));
+    aiRemoveBtn.addEventListener('click', () => processVideo('ai'));
+</script>
+
+</body>
+</html>
